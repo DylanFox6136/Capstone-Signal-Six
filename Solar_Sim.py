@@ -22,15 +22,10 @@ deposition_rate_per_hour = 0.00015
 wind_cleaning_probability = 0.005
 
 current_dust = 0.0
-np.random.seed(42)
 
 for i in range(1, total_hours):
     storm_multiplier = 1.0 + (atmospheric_tau[i] / 1.0)
     current_dust += deposition_rate_per_hour * storm_multiplier
-    
-    if np.random.rand() < wind_cleaning_probability:
-        clearing_efficiency = np.random.uniform(0.5, 1.0)
-        current_dust *= (1.0 - clearing_efficiency)
         
     current_dust = min(current_dust, 0.85)
     dust_loss[i] = current_dust
