@@ -1,0 +1,92 @@
+// Mars Lander flat-sat receiver: ESP32-C6 + RYLR998.
+// RYLR998 RXD <- ESP32 GPIO16 (TX); RYLR998 TXD -> ESP32 GPIO17 (RX).
+
+constexpr int RADIO_RX_PIN = 17;
+constexpr int RADIO_TX_PIN = 16;
+
+String line;
+
+bool radioCommand(const char *cmd) {
+  while (Serial1.available()) Serial1.read();
+  Serial1.print(cmd);
+  Serial1.print("\r\n");
+
+  String reply;
+  uint32_t started = millis();
+  while (millis() - started < 2000) {
+    while (Serial1.available()) {
+      char c = (char)Serial1.read();
+      if (c == '\n') {
+        reply.trim();
+        if (reply == "+OK") return true;
+        if (reply.startsWith("+ERR")) return false;
+        reply = "";
+      } else {
+        reply += c;
+      }
+    }
+    delay(1);
+  }
+  return false;
+}
+
+void printDataRecord(const String &frame) {
+  int comma1 = frame.indexOf(',', 5);
+  int comma2 = frame.indexOf(',', comma1 + 1);
+  int commaLast = frame.lastIndexOf(',');
+  int commaBeforeLast = frame.lastIndexOf(',', commaLast - 1);
+  
+  if (comma1 < 0 || comma2 < 0 || commaBeforeLast <= comma2 || commaLast <= commaBeforeLast) return;
+
+  String payload = frame.substring(comma2 + 1, commaBeforeLast);
+  String rssi = frame.substring(commaBeforeLast + 1, commaLast);
+
+  if (!payload.startsWith("D,")) return;
+
+  String field[13];
+  int start = 0;
+  for (int i = 0; i < 12; ++i) {
+    int comma = payload.indexOf(',', start);
+    if (comma < 0) return;
+    field[i] = payload.substring(start, comma);
+    start = comma + 1;
+  }
+  field[12] = payload.substring(start);
+
+  // Pure JSON output for the Python parser
+  Serial.print("JSON:{");
+  Serial.print("\"packet\":"); Serial.print(field[1]); Serial.print(",");
+  Serial.print("\"temp\":"); Serial.print(field[3]); Serial.print(",");
+  Serial.print("\"humidity\":"); Serial.print(field[4]); Serial.print(",");
+  Serial.print("\"pressure\":"); Serial.print(field[5]); Serial.print(",");
+  Serial.print("\"co2\":"); Serial.print(field[10]); Serial.print(",");
+  Serial.print("\"rssi\":"); Serial.print(rssi);
+  Serial.println("}");
+}
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial) { delay(10); } // Wait for USB CDC connection
+  Serial1.begin(115200, SERIAL_8N1, RADIO_RX_PIN, RADIO_TX_PIN);
+  delay(1000);
+
+  radioCommand("AT+ADDRESS=2");
+  radioCommand("AT+NETWORKID=18");
+  radioCommand("AT+BAND=915000000");
+  radioCommand("AT+PARAMETER=9,7,1,12");
+}
+
+void loop() {
+  while (Serial1.available()) {
+    char c = (char)Serial1.read();
+    if (c == '\n') {
+      line.trim();
+      if (line.startsWith("+RCV=")) printDataRecord(line);
+      line = "";
+    } else if (line.length() < 320) {
+      line += c;
+    } else {
+      line = "";
+    }
+  }
+}
