@@ -1,0 +1,192 @@
+// Mars Lander payload prototype: ESP32-C6 + RYLR998 + four I2C devices.
+// RYLR998 RXD <- ESP32 GPIO16 (TX); RYLR998 TXD -> ESP32 GPIO17 (RX).
+// I2C SDA = GPIO22, SCL = GPIO23 (Seeed XIAO ESP32-C6 pinout).
+
+#include <Wire.h>
+#include <Adafruit_INA219.h>
+#include <Adafruit_BME680.h>    // Also supports BME688 basic T/RH/P/gas readings
+#include <Adafruit_PM25AQI.h>
+#include <Adafruit_SCD30.h>
+#include <stdio.h>
+#include <string.h>
+
+constexpr uint32_t SEND_INTERVAL_MS = 10000;  // Bench demo: 10 s; mission: 600000 (10 min)
+constexpr uint32_t TX_MONITOR_MS = 1500;   // Sample INA219 around each AT+SEND
+constexpr uint32_t INA_SAMPLE_INTERVAL_MS = 5;
+constexpr int RADIO_RX_PIN = 17;
+constexpr int RADIO_TX_PIN = 16;
+constexpr int I2C_SDA_PIN = 22;
+constexpr int I2C_SCL_PIN = 23;
+
+Adafruit_INA219 ina219;
+Adafruit_BME680 bme(&Wire);
+Adafruit_PM25AQI aqi;
+Adafruit_SCD30 scd30;
+
+bool inaOK = false;
+bool bmeOK = false;
+bool pmOK = false;
+bool scdOK = false;
+bool radioOK = false;
+
+float latestCO2ppm = -1.0f;
+uint32_t lastCO2ReadMs = 0;
+uint32_t previousSendMs = 0;
+uint32_t sequence = 0;
+
+bool radioCommand(const char *cmd) {
+  // REYAX specifies waiting for +OK before sending the next AT command.
+  while (Serial1.available()) Serial1.read();
+  Serial1.print(cmd);
+  Serial1.print("\r\n");
+
+  char reply[64] = {0};
+  size_t used = 0;
+  uint32_t started = millis();
+  while (millis() - started < 2000) {
+    while (Serial1.available()) {
+      char c = (char)Serial1.read();
+      if (c == '\n') {
+        reply[used] = '\0';
+        if (strcmp(reply, "+OK\r") == 0 || strcmp(reply, "+OK") == 0) {
+          return true;
+        }
+        if (strncmp(reply, "+ERR", 4) == 0) {
+          Serial.print("Radio rejected "); Serial.print(cmd);
+          Serial.print(": "); Serial.println(reply);
+          return false;
+        }
+        used = 0;
+      } else if (used < sizeof(reply) - 1) {
+        reply[used++] = c;
+      }
+    }
+    delay(1);
+  }
+  Serial.print("Radio timeout: "); Serial.println(cmd);
+  return false;
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial1.begin(115200, SERIAL_8N1, RADIO_RX_PIN, RADIO_TX_PIN);
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Wire.setClock(50000); // SCD30 supports <=100 kHz and uses clock stretching.
+  delay(3000);          // Allow particulate sensor and radio to boot.
+
+  radioOK = radioCommand("AT+ADDRESS=1") &&
+            radioCommand("AT+NETWORKID=18") &&
+            radioCommand("AT+BAND=915000000") &&
+            radioCommand("AT+PARAMETER=9,7,1,12") &&
+            radioCommand("AT+CRFOP=10"); // Explicit 10 dBm RF output power
+
+  inaOK = ina219.begin();
+  bmeOK = bme.begin(0x77);
+  if (!bmeOK) bmeOK = bme.begin(0x76);
+  if (bmeOK) bme.setGasHeater(320, 150);
+  pmOK = aqi.begin_I2C();
+  scdOK = scd30.begin();
+
+  Serial.printf("Ready: radio=%d INA219=%d BME688=%d PMSA003I=%d SCD30=%d\n",
+                radioOK, inaOK, bmeOK, pmOK, scdOK);
+  Serial.println("Data format: D,seq,sample_ms,temp_C,RH_pct,pressure_hPa,gas_ohm,PM1,PM2_5,PM10,CO2_ppm,bus_V,current_mA");
+  previousSendMs = millis();
+}
+
+void loop() {
+  // Continuously refresh the latest SCD30 measurement (normally every >=2 s).
+  if (scdOK && scd30.dataReady() && scd30.read() && scd30.CO2 > 0) {
+    latestCO2ppm = scd30.CO2;
+    lastCO2ReadMs = millis();
+  }
+
+  if (millis() - previousSendMs < SEND_INTERVAL_MS) return;
+  previousSendMs = millis();
+
+  // -1 means unavailable / invalid, not a real sensor value.
+  bool bmeReadOK = bmeOK && bme.performReading();
+  PM25_AQI_Data particles;
+  bool pmReadOK = pmOK && aqi.read(&particles);
+
+  const float tempC = bmeReadOK ? bme.temperature : -1.0f;
+  const float rh = bmeReadOK ? bme.humidity : -1.0f;
+  const float pressureHPa = bmeReadOK ? bme.pressure / 100.0f : -1.0f;
+  const long gasOhms = bmeReadOK ? (long)bme.gas_resistance : -1L;
+  const int pm1 = pmReadOK ? (int)particles.pm10_env : -1;
+  const int pm25 = pmReadOK ? (int)particles.pm25_env : -1;
+  const int pm10 = pmReadOK ? (int)particles.pm100_env : -1;
+  const float co2 = (lastCO2ReadMs != 0 && millis() - lastCO2ReadMs < 30000)
+                    ? latestCO2ppm : -1.0f;
+  const float busV = inaOK ? ina219.getBusVoltage_V() : -1.0f;
+  const float currentMA = inaOK ? ina219.getCurrent_mA() : -1.0f;
+
+  char payload[200];
+  int n = snprintf(payload, sizeof(payload),
+                   "D,%lu,%lu,%.2f,%.1f,%.1f,%ld,%d,%d,%d,%.0f,%.3f,%.2f",
+                   (unsigned long)++sequence, (unsigned long)millis(),
+                   tempC, rh, pressureHPa, gasOhms,
+                   pm1, pm25, pm10, co2, busV, currentMA);
+
+  if (n <= 0 || n >= (int)sizeof(payload) || n > 240) {
+    Serial.println("ERROR: payload too long");
+    return;
+  }
+
+  Serial.print("TX: "); Serial.println(payload);
+  if (!radioOK) {
+    Serial.println("ERROR: radio did not initialize; packet not sent");
+    return;
+  }
+
+  // REYAX syntax: AT+SEND=<receiver_address>,<ASCII byte count>,<payload>\r\n
+  // Start sampling just before requesting the RF transmission. The current
+  // already in the transmitted packet is the pre-TX measurement; we cannot
+  // insert the peak of THIS transmission into a packet already being sent.
+  float maxObservedTxCurrentMA = -1.0f;
+  float sumWindowCurrentMA = 0.0f;
+  uint32_t currentSamples = 0;
+  uint32_t lastSampleMs = millis() - INA_SAMPLE_INTERVAL_MS;
+  uint32_t txWindowStartMs = millis();
+  Serial1.print("AT+SEND=2,");
+  Serial1.print(n);
+  Serial1.print(',');
+  Serial1.print(payload);
+  Serial1.print("\r\n");
+
+  // Monitor INA219 while/after the radio transmits and keep displaying +OK.
+  // A 1.5 s window catches the TX burst under these current radio settings,
+  // but the average below includes any idle time within that same window.
+  // An INA219 is not a high-speed oscilloscope: "peak" is the highest sampled
+  // current, not a guaranteed instantaneous RF current peak.
+  while (millis() - txWindowStartMs < TX_MONITOR_MS) {
+    while (Serial1.available()) Serial.write(Serial1.read());
+
+    const uint32_t now = millis();
+    if (inaOK && now - lastSampleMs >= INA_SAMPLE_INTERVAL_MS) {
+      lastSampleMs = now;
+      const float currentMA = ina219.getCurrent_mA();
+      if (currentSamples == 0 || currentMA > maxObservedTxCurrentMA) {
+        maxObservedTxCurrentMA = currentMA;
+      }
+      sumWindowCurrentMA += currentMA;
+      ++currentSamples;
+    }
+    delay(1);
+  }
+  while (Serial1.available()) Serial.write(Serial1.read());
+
+  if (currentSamples > 0) {
+    Serial.print("INA219 TX-window peak observed: ");
+    Serial.print(maxObservedTxCurrentMA, 2);
+    Serial.println(" mA");
+    Serial.print("INA219 TX-window average (includes idle time): ");
+    Serial.print(sumWindowCurrentMA / currentSamples, 2);
+    Serial.print(" mA over ");
+    Serial.print(TX_MONITOR_MS);
+    Serial.print(" ms, ");
+    Serial.print(currentSamples);
+    Serial.println(" samples");
+  } else {
+    Serial.println("INA219 TX current unavailable (sensor not initialized)");
+  }
+}
