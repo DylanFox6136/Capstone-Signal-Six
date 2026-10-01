@@ -20,7 +20,6 @@ import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
-
 import plotly.graph_objects as go
 import serial
 from dash import Dash, Input, Output, dcc, html, no_update
@@ -42,6 +41,7 @@ CSV_PATH = 'telemetry_log.csv'
 DEMO_MODE = '--demo' in sys.argv
 if DEMO_MODE:
     CSV_PATH = 'telemetry_log_demo.csv'
+
 
 # Channel definitions. min_span keeps near-constant signals (pressure, temp)
 # from being zoomed so far in that sensor noise looks like a cliff.
@@ -182,7 +182,7 @@ GRID = '#131D28'
 AXIS = '#1E2B39'
 TEXT = '#C9D6E3'
 DIM = '#5B6B7C'
-FONT = "Papyrus, 'Papyrus Condensed', fantasy"
+FONT = "Arial, 'Times New Roman', serif"
 CHART_HEIGHT = 240
 
 CSS = """
@@ -194,7 +194,7 @@ CSS = """
 html, body { margin: 0; background: var(--bg); }
 body {
   color: var(--text);
-  font-family: Papyrus, 'Papyrus Condensed', fantasy;
+  font-family: Arial, 'Times New Roman', serif;
   -webkit-font-smoothing: antialiased;
   background:
     radial-gradient(1200px 500px at 50% -200px, rgba(79,209,255,0.06), transparent 70%),
