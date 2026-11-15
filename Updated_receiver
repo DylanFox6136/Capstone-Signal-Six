@@ -1,0 +1,94 @@
+#include <RadioLib.h>
+
+// ESP32-C6 Pin mapping for the SX1262 SPI control lines.
+// Update these integer values to match the physical GPIO pins you wired to the shield.
+constexpr int RADIO_NSS = 7;
+constexpr int RADIO_DIO1 = 5;
+constexpr int RADIO_RESET = 0;
+constexpr int RADIO_BUSY = 3;
+
+SX1262 radio = new Module(RADIO_NSS, RADIO_DIO1, RADIO_RESET, RADIO_BUSY);
+
+// The universally compressed 26-byte payload structure
+#pragma pack(push, 1) 
+struct TelemetryPayload {
+  uint16_t packetId;      // 2 bytes
+  int16_t temperature;    // 2 bytes (BME688 * 100)
+  uint16_t pressure;      // 2 bytes (BME688 * 10)
+  int16_t magX;           // 2 bytes (RM3100 * 100)
+  int16_t magY;           // 2 bytes (RM3100 * 100)
+  int16_t magZ;           // 2 bytes (RM3100 * 100)
+  int16_t accelX;         // 2 bytes (Raw IMU)
+  int16_t accelY;         // 2 bytes (Raw IMU)
+  int16_t accelZ;         // 2 bytes (Raw IMU)
+  int16_t gyroX;          // 2 bytes (Raw IMU)
+  int16_t gyroY;          // 2 bytes (Raw IMU)
+  int16_t gyroZ;          // 2 bytes (Raw IMU)
+  uint16_t radiation;     // 2 bytes (Geiger CPM)
+}; // Total: Exactly 26 bytes
+#pragma pack(pop)
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Wait for the ESP32-C6 native USB CDC connection to establish
+  // so you don't miss the initialization prints in the Serial Monitor
+  while (!Serial) { delay(10); } 
+
+  // Initialize the SX1262 matching the STM32's RF parameters (SF10, 915MHz, etc.)
+  int state = radio.begin(915.0, 125.0, 10, 7, 0x12, 10, 8, 1.6, false);
+  
+  if (state == RADIOLIB_ERR_NONE) {
+    Serial.println("ESP32 Receiver Initialized.");
+  } else {
+    Serial.print("Radio initialization failed, code: ");
+    Serial.println(state);
+    while (true); // Halt on hardware failure
+  }
+}
+
+void loop() {
+  uint8_t rawBytes[26] = {0}; 
+  
+  // Listen for exactly 26 bytes. Returns RADIOLIB_ERR_RX_TIMEOUT if nothing is heard,
+  // which safely prevents the ESP32 from freezing between your 10-minute intervals.
+  int state = radio.receive(rawBytes, 26); 
+  
+  if (state == RADIOLIB_ERR_NONE) {
+    // Copy the byte array into our structured memory map
+    TelemetryPayload payload;
+    memcpy(&payload, rawBytes, sizeof(TelemetryPayload));
+    
+    // Grab the signal strength of the incoming packet
+    float rssi = radio.getRSSI();
+
+    // Format as pure JSON for the Python Plotly Dash parser.
+    // We divide by the float equivalent of the scale factors (100.0, 10.0) 
+    // to force C++ to restore the decimals before printing.
+    Serial.print("JSON:{");
+    Serial.print("\"packet\":"); Serial.print(payload.packetId); Serial.print(",");
+    Serial.print("\"temp\":"); Serial.print(payload.temperature / 100.0); Serial.print(",");
+    Serial.print("\"pressure\":"); Serial.print(payload.pressure / 10.0); Serial.print(",");
+    Serial.print("\"magX\":"); Serial.print(payload.magX / 100.0); Serial.print(",");
+    Serial.print("\"magY\":"); Serial.print(payload.magY / 100.0); Serial.print(",");
+    Serial.print("\"magZ\":"); Serial.print(payload.magZ / 100.0); Serial.print(",");
+    
+    // IMU and Radiation are passed as standard integers
+    Serial.print("\"ax\":"); Serial.print(payload.accelX); Serial.print(",");
+    Serial.print("\"ay\":"); Serial.print(payload.accelY); Serial.print(",");
+    Serial.print("\"az\":"); Serial.print(payload.accelZ); Serial.print(",");
+    Serial.print("\"gx\":"); Serial.print(payload.gyroX); Serial.print(",");
+    Serial.print("\"gy\":"); Serial.print(payload.gyroY); Serial.print(",");
+    Serial.print("\"gz\":"); Serial.print(payload.gyroZ); Serial.print(",");
+    Serial.print("\"radiation\":"); Serial.print(payload.radiation); Serial.print(",");
+    
+    // Append the local RSSI reading
+    Serial.print("\"rssi\":"); Serial.print(rssi);
+    Serial.println("}");
+  } 
+  else if (state != RADIOLIB_ERR_RX_TIMEOUT) {
+    // Optional: Log errors for corrupted packets (e.g., CRC mismatch)
+    // Serial.print("Receive failed, code: ");
+    // Serial.println(state);
+  }
+}
