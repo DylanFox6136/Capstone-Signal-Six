@@ -1,0 +1,208 @@
+import dash
+from dash import dcc, html
+from dash.dependencies import Input, Output
+import plotly.graph_objs as go
+import serial
+import threading
+import json
+import time
+from collections import deque
+
+# ---------------------------------------------------------
+# Data Storage (Thread-safe deques to hold the last 50 points)
+# ---------------------------------------------------------
+MAX_POINTS = 50
+data_lock = threading.Lock()
+
+timestamps = deque(maxlen=MAX_POINTS)
+packets = deque(maxlen=MAX_POINTS)
+
+# Environmental
+temp_data = deque(maxlen=MAX_POINTS)
+pressure_data = deque(maxlen=MAX_POINTS)
+rad_data = deque(maxlen=MAX_POINTS)
+
+# RM3100 Magnetometer
+mag_x = deque(maxlen=MAX_POINTS)
+mag_y = deque(maxlen=MAX_POINTS)
+mag_z = deque(maxlen=MAX_POINTS)
+
+# IMU Accelerometer
+accel_x = deque(maxlen=MAX_POINTS)
+accel_y = deque(maxlen=MAX_POINTS)
+accel_z = deque(maxlen=MAX_POINTS)
+
+# IMU Gyroscope
+gyro_x = deque(maxlen=MAX_POINTS)
+gyro_y = deque(maxlen=MAX_POINTS)
+gyro_z = deque(maxlen=MAX_POINTS)
+
+# RF Diagnostics
+rssi_data = deque(maxlen=MAX_POINTS)
+
+# ---------------------------------------------------------
+# Background Serial Thread
+# ---------------------------------------------------------
+def read_serial():
+    try:
+        # Connecting to the ESP32-C6 on COM8
+        ser = serial.Serial('COM8', 115200, timeout=1)
+        print("Connected to ESP32 Receiver on COM8.")
+    except Exception as e:
+        print(f"Error opening COM8: {e}")
+        return
+
+    while True:
+        try:
+            line = ser.readline().decode('utf-8').strip()
+            if line.startswith("JSON:"):
+                # Strip the "JSON:" prefix and parse the payload
+                json_str = line[5:]
+                data = json.loads(json_str)
+
+                with data_lock:
+                    timestamps.append(time.strftime('%H:%M:%S'))
+                    packets.append(data.get("packet", 0))
+                    
+                    temp_data.append(data.get("temp", 0))
+                    pressure_data.append(data.get("pressure", 0))
+                    rad_data.append(data.get("radiation", 0))
+                    
+                    mag_x.append(data.get("magX", 0))
+                    mag_y.append(data.get("magY", 0))
+                    mag_z.append(data.get("magZ", 0))
+                    
+                    accel_x.append(data.get("ax", 0))
+                    accel_y.append(data.get("ay", 0))
+                    accel_z.append(data.get("az", 0))
+                    
+                    gyro_x.append(data.get("gx", 0))
+                    gyro_y.append(data.get("gy", 0))
+                    gyro_z.append(data.get("gz", 0))
+                    
+                    rssi_data.append(data.get("rssi", 0))
+                    
+                print(f"Received Packet {data.get('packet', 0)} | RSSI: {data.get('rssi', 0)}")
+                
+        except json.JSONDecodeError:
+            print("Malformed JSON payload over LoRa link.")
+        except Exception as e:
+            pass
+
+# Start the background thread
+thread = threading.Thread(target=read_serial, daemon=True)
+thread.start()
+
+# ---------------------------------------------------------
+# Dash App Layout
+# ---------------------------------------------------------
+app = dash.Dash(__name__)
+app.title = "Mars Lander Telemetry"
+
+app.layout = html.Div(style={'backgroundColor': '#111111', 'color': '#FFFFFF', 'fontFamily': 'Arial'}, children=[
+    html.H1("CU Boulder ECE Capstone: Mars Lander Payload", style={'textAlign': 'center', 'padding': '20px'}),
+    
+    html.Div([
+        dcc.Graph(id='env-graph', style={'width': '48%', 'display': 'inline-block'}),
+        dcc.Graph(id='rad-rssi-graph', style={'width': '48%', 'display': 'inline-block'})
+    ]),
+    
+    html.Div([
+        dcc.Graph(id='mag-graph', style={'width': '33%', 'display': 'inline-block'}),
+        dcc.Graph(id='accel-graph', style={'width': '33%', 'display': 'inline-block'}),
+        dcc.Graph(id='gyro-graph', style={'width': '33%', 'display': 'inline-block'})
+    ]),
+    
+    # Refresh rate set to 5000ms (5 seconds) since the Lander transmits every 10 minutes
+    dcc.Interval(id='interval-component', interval=5000, n_intervals=0)
+])
+
+# ---------------------------------------------------------
+# Plotly Graph Updates
+# ---------------------------------------------------------
+@app.callback(
+    [Output('env-graph', 'figure'),
+     Output('rad-rssi-graph', 'figure'),
+     Output('mag-graph', 'figure'),
+     Output('accel-graph', 'figure'),
+     Output('gyro-graph', 'figure')],
+    [Input('interval-component', 'n_intervals')]
+)
+def update_graphs(n):
+    with data_lock:
+        t = list(timestamps)
+        p_temp = list(temp_data)
+        p_pres = list(pressure_data)
+        
+        p_rad = list(rad_data)
+        p_rssi = list(rssi_data)
+        
+        mx, my, mz = list(mag_x), list(mag_y), list(mag_z)
+        ax, ay, az = list(accel_x), list(accel_y), list(accel_z)
+        gx, gy, gz = list(gyro_x), list(gyro_y), list(gyro_z)
+
+    # Base styling for all plots
+    layout_base = {
+        'paper_bgcolor': '#111111',
+        'plot_bgcolor': '#222222',
+        'font': {'color': '#FFFFFF'},
+        'margin': {'l': 40, 'r': 40, 't': 40, 'b': 40}
+    }
+
+    # 1. Environment (Dual Y-Axis)
+    env_fig = {
+        'data': [
+            go.Scatter(x=t, y=p_temp, mode='lines+markers', name='Temp (°C)', yaxis='y1'),
+            go.Scatter(x=t, y=p_pres, mode='lines+markers', name='Pressure (hPa)', yaxis='y2')
+        ],
+        'layout': {**layout_base, 'title': 'Environmental (BME688)', 
+                   'yaxis': {'title': 'Temp °C'}, 
+                   'yaxis2': {'title': 'Pressure', 'overlaying': 'y', 'side': 'right'}}
+    }
+
+    # 2. Radiation & Link (Dual Y-Axis)
+    rad_rssi_fig = {
+        'data': [
+            go.Scatter(x=t, y=p_rad, mode='lines+markers', name='Radiation (CPM)', yaxis='y1', line={'color': 'yellow'}),
+            go.Scatter(x=t, y=p_rssi, mode='lines+markers', name='RSSI (dBm)', yaxis='y2', line={'color': 'cyan'})
+        ],
+        'layout': {**layout_base, 'title': 'Radiation & Link Diagnostics', 
+                   'yaxis': {'title': 'CPM'}, 
+                   'yaxis2': {'title': 'RSSI (dBm)', 'overlaying': 'y', 'side': 'right'}}
+    }
+
+    # 3. RM3100 Magnetometer
+    mag_fig = {
+        'data': [
+            go.Scatter(x=t, y=mx, mode='lines+markers', name='X'),
+            go.Scatter(x=t, y=my, mode='lines+markers', name='Y'),
+            go.Scatter(x=t, y=mz, mode='lines+markers', name='Z')
+        ],
+        'layout': {**layout_base, 'title': 'Magnetometer (µT)'}
+    }
+
+    # 4. Accelerometer
+    accel_fig = {
+        'data': [
+            go.Scatter(x=t, y=ax, mode='lines+markers', name='X'),
+            go.Scatter(x=t, y=ay, mode='lines+markers', name='Y'),
+            go.Scatter(x=t, y=az, mode='lines+markers', name='Z')
+        ],
+        'layout': {**layout_base, 'title': 'Accelerometer (Raw 16-bit)'}
+    }
+
+    # 5. Gyroscope
+    gyro_fig = {
+        'data': [
+            go.Scatter(x=t, y=gx, mode='lines+markers', name='X'),
+            go.Scatter(x=t, y=gy, mode='lines+markers', name='Y'),
+            go.Scatter(x=t, y=gz, mode='lines+markers', name='Z')
+        ],
+        'layout': {**layout_base, 'title': 'Gyroscope (Raw 16-bit)'}
+    }
+
+    return env_fig, rad_rssi_fig, mag_fig, accel_fig, gyro_fig
+
+if __name__ == '__main__':
+    # Run locally. Pair this with your Ngrok secure tunnel for external viewing.
+    app.run_server(debug=True, use_reloader=False)
