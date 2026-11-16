@@ -103,15 +103,33 @@ app.layout = html.Div(style={'backgroundColor': '#111111', 'color': '#FFFFFF', '
     html.H1("CU Boulder ECE Capstone: Mars Lander Payload", style={'textAlign': 'center', 'padding': '20px'}),
     
     html.Div([
-        dcc.Graph(id='env-graph', style={'width': '48%', 'display': 'inline-block'}),
-        dcc.Graph(id='rad-rssi-graph', style={'width': '48%', 'display': 'inline-block'})
-    ]),
+        html.Div([
+            html.H3("Environmental (BME688)", style={'textAlign': 'center', 'margin': '10px 0 0 0'}),
+            dcc.Graph(id='env-graph')
+        ], style={'width': '48%', 'display': 'inline-block'}),
+        
+        html.Div([
+            html.H3("Radiation & Link Diagnostics", style={'textAlign': 'center', 'margin': '10px 0 0 0'}),
+            dcc.Graph(id='rad-rssi-graph')
+        ], style={'width': '48%', 'display': 'inline-block'})
+    ], style={'display': 'flex', 'justifyContent': 'space-around'}),
     
     html.Div([
-        dcc.Graph(id='mag-graph', style={'width': '33%', 'display': 'inline-block'}),
-        dcc.Graph(id='accel-graph', style={'width': '33%', 'display': 'inline-block'}),
-        dcc.Graph(id='gyro-graph', style={'width': '33%', 'display': 'inline-block'})
-    ]),
+        html.Div([
+            html.H3("Magnetometer (µT)", style={'textAlign': 'center', 'margin': '10px 0 0 0'}),
+            dcc.Graph(id='mag-graph')
+        ], style={'width': '32%', 'display': 'inline-block'}),
+        
+        html.Div([
+            html.H3("Accelerometer (Raw 16-bit)", style={'textAlign': 'center', 'margin': '10px 0 0 0'}),
+            dcc.Graph(id='accel-graph')
+        ], style={'width': '32%', 'display': 'inline-block'}),
+        
+        html.Div([
+            html.H3("Gyroscope (Raw 16-bit)", style={'textAlign': 'center', 'margin': '10px 0 0 0'}),
+            dcc.Graph(id='gyro-graph')
+        ], style={'width': '32%', 'display': 'inline-block'})
+    ], style={'display': 'flex', 'justifyContent': 'space-around', 'marginTop': '20px'}),
     
     # Refresh rate set to 5000ms (5 seconds) since the Lander transmits every 10 minutes
     dcc.Interval(id='interval-component', interval=5000, n_intervals=0)
@@ -146,7 +164,7 @@ def update_graphs(n):
         'paper_bgcolor': '#111111',
         'plot_bgcolor': '#222222',
         'font': {'color': '#FFFFFF'},
-        'margin': {'l': 40, 'r': 40, 't': 40, 'b': 40}
+        'margin': {'l': 40, 'r': 40, 't': 20, 'b': 40} # Reduced top margin since HTML handles the title
     }
 
     # 1. Environment (Dual Y-Axis)
@@ -155,7 +173,7 @@ def update_graphs(n):
             go.Scatter(x=t, y=p_temp, mode='lines+markers', name='Temp (°C)', yaxis='y1'),
             go.Scatter(x=t, y=p_pres, mode='lines+markers', name='Pressure (hPa)', yaxis='y2')
         ],
-        'layout': {**layout_base, 'title': 'Environmental (BME688)', 
+        'layout': {**layout_base, 
                    'yaxis': {'title': 'Temp °C'}, 
                    'yaxis2': {'title': 'Pressure', 'overlaying': 'y', 'side': 'right'}}
     }
@@ -166,7 +184,7 @@ def update_graphs(n):
             go.Scatter(x=t, y=p_rad, mode='lines+markers', name='Radiation (CPM)', yaxis='y1', line={'color': 'yellow'}),
             go.Scatter(x=t, y=p_rssi, mode='lines+markers', name='RSSI (dBm)', yaxis='y2', line={'color': 'cyan'})
         ],
-        'layout': {**layout_base, 'title': 'Radiation & Link Diagnostics', 
+        'layout': {**layout_base, 
                    'yaxis': {'title': 'CPM'}, 
                    'yaxis2': {'title': 'RSSI (dBm)', 'overlaying': 'y', 'side': 'right'}}
     }
@@ -178,7 +196,7 @@ def update_graphs(n):
             go.Scatter(x=t, y=my, mode='lines+markers', name='Y'),
             go.Scatter(x=t, y=mz, mode='lines+markers', name='Z')
         ],
-        'layout': {**layout_base, 'title': 'Magnetometer (µT)'}
+        'layout': {**layout_base}
     }
 
     # 4. Accelerometer
@@ -188,7 +206,7 @@ def update_graphs(n):
             go.Scatter(x=t, y=ay, mode='lines+markers', name='Y'),
             go.Scatter(x=t, y=az, mode='lines+markers', name='Z')
         ],
-        'layout': {**layout_base, 'title': 'Accelerometer (Raw 16-bit)'}
+        'layout': {**layout_base}
     }
 
     # 5. Gyroscope
@@ -198,11 +216,11 @@ def update_graphs(n):
             go.Scatter(x=t, y=gy, mode='lines+markers', name='Y'),
             go.Scatter(x=t, y=gz, mode='lines+markers', name='Z')
         ],
-        'layout': {**layout_base, 'title': 'Gyroscope (Raw 16-bit)'}
+        'layout': {**layout_base}
     }
 
     return env_fig, rad_rssi_fig, mag_fig, accel_fig, gyro_fig
 
 if __name__ == '__main__':
     # Run locally. Pair this with your Ngrok secure tunnel for external viewing.
-    app.run_server(debug=True, use_reloader=False)
+    app.run(debug=True, use_reloader=False)
